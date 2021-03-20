@@ -1,0 +1,20 @@
+[package]
+name = "ups"
+version = "0.1.0"
+authors = ["Rodrigo Gryzinski <rogryza@gmail.com>"]
+edition = "2018"
+
+[[bin]]
+name = "upstool"
+path = "src/main.rs"
+required-features = ["cli"]
+
+[features]
+cli = []
+
+[dependencies]
+crc32fast = "^1.2.1"
+thiserror = "1"
+
+[dev-dependencies]
+proptest = "^1.0.0"
