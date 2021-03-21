@@ -1,19 +1,27 @@
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{Read, Write};
 
-use ups::apply_patch;
-use ups::parser::Parser;
+use ups::{apply_patch, Patch};
 
 fn main() {
+    let mut raw_src = Vec::new();
+    File::open("samples/rom.bin")
+        .unwrap()
+        .read_to_end(&mut raw_src)
+        .unwrap();
     for name in &["rr-2-2b", "YAFRROFR", "unbound"] {
         println!("Running {}...", name);
-        let patch = BufReader::new(File::open(&format!("samples/{}.ups", name)).unwrap());
-        let src = BufReader::new(File::open("samples/rom.bin").unwrap());
+        let mut raw_patch = Vec::new();
+        File::open(&format!("samples/{}.ups", name))
+            .unwrap()
+            .read_to_end(&mut raw_patch)
+            .unwrap();
         let mut dst = File::create(&format!("out/{}.bin", name)).unwrap();
-        let parser = Parser::init(patch).unwrap();
+        let patch = Patch::parse(&raw_patch).unwrap();
 
-        if let Err(e) = apply_patch(parser, src, &mut dst) {
-            println!("ERR: {}", e);
+        match apply_patch(patch, &raw_src) {
+            Ok(d) => dst.write_all(&d).unwrap(),
+            Err(e) => println!("ERR: {}", e),
         }
     }
 }

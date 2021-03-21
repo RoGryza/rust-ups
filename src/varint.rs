@@ -1,73 +1,51 @@
-#[cfg(test)]
-use std::io::Write;
-use std::io::{self, BufRead};
-
-pub fn read<R: BufRead>(mut reader: R) -> io::Result<(usize, usize)> {
+pub fn read_bytes(buf: &mut &[u8]) -> Option<usize> {
     let mut varint = 0;
     let mut shift = 0;
-    let mut total = 0;
+    let mut cursor = *buf;
     loop {
-        let buf = reader.fill_buf()?;
-        if buf.is_empty() {
+        let (c, next_cursor) = match cursor.split_first() {
+            Some(s) => s,
+            None => return None,
+        };
+        cursor = next_cursor;
+        if c & 0x80 != 0 {
+            varint = varint_add_shifted(varint, c & 0x7f, shift)?;
             break;
         }
-        for (i, c) in buf.iter().enumerate() {
-            if c & 0x80 != 0 {
-                varint = varint_add_shifted(varint, c & 0x7f, shift)?;
-                reader.consume(i + 1);
-                return Ok((varint, total + i + 1));
-            }
-            varint = varint_add_shifted(varint, c | 0x80, shift)?;
-            shift += 7;
-        }
-        let len = buf.len();
-        total += len;
-        reader.consume(len);
+        varint = varint_add_shifted(varint, c | 0x80, shift)?;
+        shift += 7;
     }
-
-    Err(io::Error::new(
-        io::ErrorKind::UnexpectedEof,
-        "Unexpected EOF while reading varint",
-    ))
+    *buf = cursor;
+    Some(varint)
 }
 
 /// Returns `current + x << shift` checking for overflow.
 #[inline]
-fn varint_add_shifted(current: usize, x: u8, shift: u32) -> io::Result<usize> {
+fn varint_add_shifted(current: usize, x: u8, shift: u32) -> Option<usize> {
     (x as usize)
         .checked_shl(shift)
         .and_then(|x2| current.checked_add(x2))
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Overflow while reading varint"))
 }
 
 #[cfg(test)]
-pub fn write<W: Write>(mut writer: W, mut varint: usize) -> io::Result<()> {
+pub fn to_vec(mut varint: usize) -> Vec<u8> {
+    let mut result = Vec::new();
     loop {
         let x = (varint & 0x7f) as u8;
         varint = varint >> 7;
         if varint == 0 {
-            writer.write_all(&[x | 0x80])?;
+            result.push(x | 0x80);
             break;
         }
-        writer.write_all(&[x])?;
-        varint = varint - 1;
+        result.push(x);
+        varint -= 1;
     }
-    Ok(())
-}
-
-#[cfg(test)]
-pub fn to_vec(varint: usize) -> Vec<u8> {
-    let mut result = Vec::new();
-    match write(&mut result, varint) {
-        Ok(_) => result,
-        Err(_) => std::unreachable!(),
-    }
+    result
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::io::{Cursor, ErrorKind};
 
     use proptest::prelude::*;
 
@@ -75,7 +53,7 @@ mod test {
         #[test]
         fn test_roundtrip(x in any::<usize>()) {
             let serialized = to_vec(x);
-            let (deserialized, _) = read(Cursor::new(serialized)).unwrap();
+            let deserialized = read_bytes(&mut serialized.as_ref()).unwrap();
             prop_assert_eq!(x, deserialized);
         }
     }
@@ -87,7 +65,6 @@ mod test {
         let last = serialized.len() - 1;
         serialized[last] &= 0x7f;
         serialized.push(1);
-        let err = read(Cursor::new(serialized)).unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::InvalidData);
+        assert_eq!(read_bytes(&mut serialized.as_ref()), None);
     }
 }

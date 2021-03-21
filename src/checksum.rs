@@ -12,6 +12,14 @@ pub struct ChecksumStream<S> {
     hasher: Hasher,
 }
 
+impl Checksum {
+    pub fn from_bytes(data: &[u8]) -> Self {
+        let mut hasher = Hasher::new();
+        hasher.update(&data);
+        Checksum(hasher.finalize())
+    }
+}
+
 impl Debug for Checksum {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         write!(f, "Checksum({:x})", self)

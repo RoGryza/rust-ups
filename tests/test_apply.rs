@@ -1,8 +1,9 @@
 use std::fs::File;
-use std::io::BufReader;
+use std::io::Read;
 
-use ups::apply_patch;
-use ups::parser::Parser;
+use ups::{apply_patch, Patch};
+
+const RAW_SRC: &[u8] = include_bytes!("../samples/rom.bin");
 
 #[test]
 fn test_apply_rr_2_2b() {
@@ -20,10 +21,12 @@ fn test_apply_unbound() {
 }
 
 fn test_apply(patch: &str) {
-    let patch = BufReader::new(File::open(&format!("samples/{}", patch)).unwrap());
-    let src = BufReader::new(File::open("samples/rom.bin").unwrap());
-    let mut dst = Vec::new();
-    let parser = Parser::init(patch).unwrap();
+    let mut raw_patch = Vec::new();
+    File::open(&format!("samples/{}", patch))
+        .unwrap()
+        .read_to_end(&mut raw_patch)
+        .unwrap();
+    let patch = Patch::parse(&raw_patch).unwrap();
 
-    apply_patch(parser, src, &mut dst).unwrap();
+    apply_patch(patch, RAW_SRC).unwrap();
 }
