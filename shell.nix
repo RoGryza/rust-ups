@@ -5,6 +5,8 @@ let
 in pkgs.stdenv.mkDerivation {
   name = "moz_overlay_shell";
   buildInputs = [
-      rustChannel.cargo rustChannel.rust
-    ];
-  }
+    rustChannel.cargo rustChannel.rust
+    pkgs.cargo-flamegraph /*TODO pkgs.cargo-profiler*/ pkgs.valgrind
+    pkgs.kcachegrind
+  ];
+}

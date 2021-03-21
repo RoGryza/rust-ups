@@ -14,7 +14,7 @@ cli = []
 
 [dependencies]
 crc32fast = "^1.2.1"
-thiserror = "1"
+thiserror = "^1"
 
 [dev-dependencies]
 proptest = "^1.0.0"

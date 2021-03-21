@@ -1,18 +1,28 @@
 #[cfg(test)]
 use std::io::Write;
-use std::io::{self, Read};
+use std::io::{self, BufRead};
 
-pub fn read<R: Read>(reader: R) -> io::Result<(usize, usize)> {
+pub fn read<R: BufRead>(mut reader: R) -> io::Result<(usize, usize)> {
     let mut varint = 0;
     let mut shift = 0;
-    for (i, c_res) in reader.bytes().enumerate() {
-        let c = c_res?;
-        if c & 0x80 != 0 {
-            varint = varint_add_shifted(varint, c & 0x7f, shift)?;
-            return Ok((varint, i + 1));
+    let mut total = 0;
+    loop {
+        let buf = reader.fill_buf()?;
+        if buf.is_empty() {
+            break;
         }
-        varint = varint_add_shifted(varint, c | 0x80, shift)?;
-        shift += 7;
+        for (i, c) in buf.iter().enumerate() {
+            if c & 0x80 != 0 {
+                varint = varint_add_shifted(varint, c & 0x7f, shift)?;
+                reader.consume(i + 1);
+                return Ok((varint, total + i + 1));
+            }
+            varint = varint_add_shifted(varint, c | 0x80, shift)?;
+            shift += 7;
+        }
+        let len = buf.len();
+        total += len;
+        reader.consume(len);
     }
 
     Err(io::Error::new(

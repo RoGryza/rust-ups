@@ -69,6 +69,7 @@ impl<S: Read> ChecksumStream<S> {
 }
 
 impl<S: Read> Read for ChecksumStream<S> {
+    #[inline]
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let res = self.inner.read(buf);
         if let Ok(n) = res {
@@ -79,6 +80,7 @@ impl<S: Read> Read for ChecksumStream<S> {
 }
 
 impl<S: Write> Write for ChecksumStream<S> {
+    #[inline]
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let res = self.inner.write(buf);
         if let Ok(n) = res {

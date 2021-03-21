@@ -1,5 +1,4 @@
-use std::io::{self, BufReader, Read, Seek, SeekFrom, Take};
-use std::num::NonZeroU8;
+use std::io::{self, BufRead, Read, Seek, SeekFrom, Take};
 
 use crate::checksum::ChecksumStream;
 use crate::{varint, Checksum};
@@ -39,17 +38,17 @@ pub struct Checksums {
 
 #[derive(Debug)]
 pub struct Hunks<R> {
-    reader: BufReader<Take<R>>,
+    reader: Take<R>,
     remaining: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Hunk {
     pub offset: usize,
-    pub patch: Vec<NonZeroU8>,
+    pub patch: Vec<u8>,
 }
 
-impl<R: Read + Seek> Parser<R> {
+impl<R: BufRead + Seek> Parser<R> {
     pub fn init(reader: R) -> UpsParseResult<Self> {
         Self::init_inner(reader, false)
     }
@@ -120,10 +119,10 @@ impl<R: Read + Seek> Parser<R> {
     }
 }
 
-impl<R: Read> Hunks<R> {
+impl<R: BufRead> Hunks<R> {
     fn new(reader: R, remaining: usize) -> Self {
         Hunks {
-            reader: BufReader::new(reader.take(remaining as u64)),
+            reader: reader.take(remaining as u64),
             remaining,
         }
     }
@@ -139,16 +138,9 @@ impl<R: Read> Hunks<R> {
             self.remaining = 0;
             return Ok(None);
         }
-        let patch: Vec<_> = self
-            .reader
-            .by_ref()
-            .bytes()
-            .take_while(|b| match b {
-                Ok(0) => false,
-                _ => true,
-            })
-            .map(|r| r.map(|b| unsafe { NonZeroU8::new_unchecked(b) }))
-            .collect::<io::Result<_>>()?;
+        let mut patch = Vec::new();
+        self.reader.read_until(0, &mut patch)?;
+
         if patch.len() == 0 {
             Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
@@ -156,13 +148,13 @@ impl<R: Read> Hunks<R> {
             )
             .into())
         } else {
-            self.remaining -= offset_n_bytes + patch.len() + 1;
+            self.remaining -= offset_n_bytes + patch.len();
             Ok(Some(Hunk { offset, patch }))
         }
     }
 }
 
-impl<R: Read> Iterator for Hunks<R> {
+impl<R: BufRead> Iterator for Hunks<R> {
     type Item = UpsParseResult<Hunk>;
 
     fn next(&mut self) -> Option<UpsParseResult<Hunk>> {
@@ -266,8 +258,7 @@ mod test {
             varint::write(&mut bytes, dst_size).unwrap();
             for hunk in &hunks {
                 varint::write(&mut bytes, hunk.offset).unwrap();
-                bytes.extend(hunk.patch.iter().map(|b| b.get()));
-                bytes.push(0);
+                bytes.extend(&hunk.patch);
             }
 
             bytes.extend_from_slice(&src_checksum.0.to_le_bytes());
@@ -299,7 +290,7 @@ mod test {
 
     prop_compose! {
         fn patch_hunks()
-            (offset in any::<usize>(), patch in vec(patch_bytes(), 1..64))
+            (offset in any::<usize>(), patch in patch_byte_vec())
             -> Hunk
         {
             Hunk {
@@ -309,7 +300,10 @@ mod test {
         }
     }
 
-    fn patch_bytes() -> impl Strategy<Value = NonZeroU8> {
-        (1..=255u8).prop_map(|b| unsafe { NonZeroU8::new_unchecked(b) })
+    fn patch_byte_vec() -> impl Strategy<Value = Vec<u8>> {
+        vec(1..=255u8, 1..64).prop_map(|mut v| {
+            v.push(0);
+            v
+        })
     }
 }

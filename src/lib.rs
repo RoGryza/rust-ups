@@ -5,7 +5,7 @@ mod varint;
 pub use checksum::{Checksum, ChecksumStream};
 
 use std::fmt::{self, Display, Formatter};
-use std::io::{self, ErrorKind, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufRead, ErrorKind, Read, Seek, SeekFrom, Write};
 
 use parser::{Parser, UpsParseError};
 
@@ -62,7 +62,7 @@ pub type UpsApplyResult<T> = Result<T, UpsApplyError>;
 
 pub fn apply_patch<R, S, W>(patch: Parser<R>, mut src: S, dst: W) -> UpsApplyResult<()>
 where
-    R: Read,
+    R: BufRead,
     S: Read + Seek,
     W: Write,
 {
@@ -78,43 +78,37 @@ where
     }
     src.seek(SeekFrom::Start(0))
         .map_err(UpsApplyError::SourceRead)?;
+
     let mut src_reader = ChecksumStream::new(src).chain(io::repeat(0));
     let mut dst_writer = ChecksumStream::new(dst);
-    let mut buf = [0u8; 4096];
     let mut dst_size = 0;
+    let mut buf = Vec::new();
+
     for hunk_res in patch.hunks {
-        let hunk = hunk_res?;
+        let mut hunk = hunk_res?;
         if hunk.offset > 0 {
             iocopy(
-                &mut buf,
                 &mut src_reader.by_ref().take(hunk.offset as u64),
                 &mut dst_writer,
             )?;
         }
 
-        iocopy_map(
-            &mut buf,
-            &mut src_reader.by_ref().take(hunk.patch.len() as u64),
-            &mut dst_writer,
-            |offset, bytes| {
-                for (src_byte, patch_byte) in bytes.iter_mut().zip(&hunk.patch[offset..]) {
-                    *src_byte ^= patch_byte.get()
-                }
-            },
-        )?;
-
         dst_size += hunk.offset + hunk.patch.len();
-        if dst_size < patch.dst_size {
-            let mut byte = [0u8];
-            src_reader
-                .read_exact(&mut byte)
-                .map_err(UpsApplyError::SourceRead)?;
-            dst_writer
-                .write_all(&byte)
-                .map_err(UpsApplyError::DestWrite)?;
-
-            dst_size += 1;
+        if dst_size > patch.dst_size {
+            let delta = dst_size - patch.dst_size;
+            hunk.patch.truncate(hunk.patch.len() - delta);
+            dst_size -= delta;
         }
+        buf.resize(hunk.patch.len(), 0);
+        src_reader
+            .read_exact(&mut buf)
+            .map_err(UpsApplyError::SourceRead)?;
+        for (src_byte, patch_byte) in buf.iter_mut().zip(&hunk.patch) {
+            *src_byte ^= patch_byte;
+        }
+        dst_writer
+            .write_all(&buf)
+            .map_err(UpsApplyError::DestWrite)?;
     }
 
     if dst_size != patch.dst_size {
@@ -124,7 +118,6 @@ where
         }
         .dest());
     }
-
     let (_, src_checksum) = src_reader.into_inner().0.finalize();
     if src_checksum != patch.checksums.src {
         return Err(FileMetadataMismatch::Checksum {
@@ -145,38 +138,22 @@ where
     Ok(())
 }
 
-// Like io::copy but takes a buf parameter and maps errors to UpsApplyError
-fn iocopy<R, W>(buf: &mut [u8], reader: &mut R, writer: &mut W) -> UpsApplyResult<()>
+// Like io::copy but maps errors to UpsApplyError
+fn iocopy<R, W>(reader: &mut R, writer: &mut W) -> UpsApplyResult<()>
 where
     R: Read,
     W: Write,
 {
-    iocopy_map(buf, reader, writer, |_, _| ())
-}
-
-fn iocopy_map<R, W, F>(
-    buf: &mut [u8],
-    reader: &mut R,
-    writer: &mut W,
-    mut map: F,
-) -> UpsApplyResult<()>
-where
-    R: Read,
-    W: Write,
-    F: FnMut(usize, &mut [u8]),
-{
-    let mut offset = 0;
+    let mut buf = [0u8; 4096];
     loop {
-        let len = match reader.read(buf) {
+        let len = match reader.read(&mut buf) {
             Ok(0) => return Ok(()),
             Ok(len) => len,
             Err(ref e) if e.kind() == ErrorKind::Interrupted => continue,
             Err(e) => return Err(UpsApplyError::SourceRead(e)),
         };
-        map(offset, &mut buf[..len]);
         writer
             .write_all(&buf[..len])
             .map_err(UpsApplyError::DestWrite)?;
-        offset += len;
     }
 }
