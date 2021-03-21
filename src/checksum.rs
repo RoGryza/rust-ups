@@ -1,5 +1,4 @@
 use std::fmt::{self, Debug, Display, Formatter, LowerHex, UpperHex};
-use std::io::{self, Read, Write};
 
 use crc32fast::Hasher;
 
@@ -49,55 +48,5 @@ impl UpperHex for Checksum {
             write!(f, "{:02X}", byte)?;
         }
         Ok(())
-    }
-}
-
-impl<S> ChecksumStream<S> {
-    pub fn new(stream: S) -> Self {
-        ChecksumStream {
-            inner: stream,
-            hasher: Hasher::new(),
-        }
-    }
-
-    pub fn finalize(self) -> (S, Checksum) {
-        (self.inner, Checksum(self.hasher.finalize()))
-    }
-}
-
-impl<S: Read> ChecksumStream<S> {
-    pub fn calculate_checksum(mut self) -> io::Result<Checksum> {
-        let mut buf = [0u8; 4096];
-        loop {
-            if self.read(&mut buf)? == 0 {
-                return Ok(Checksum(self.hasher.finalize()));
-            }
-        }
-    }
-}
-
-impl<S: Read> Read for ChecksumStream<S> {
-    #[inline]
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let res = self.inner.read(buf);
-        if let Ok(n) = res {
-            self.hasher.update(&buf[..n]);
-        }
-        res
-    }
-}
-
-impl<S: Write> Write for ChecksumStream<S> {
-    #[inline]
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let res = self.inner.write(buf);
-        if let Ok(n) = res {
-            self.hasher.update(&buf[..n]);
-        }
-        res
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.inner.flush()
     }
 }

@@ -6,10 +6,13 @@ use memchr::memchr;
 use crate::checksum::Checksum;
 use crate::varint;
 
+/// Possible errors when parsing an UPS patch file.
 #[derive(thiserror::Error, Debug)]
 pub enum UpsParseError {
     #[error("The file doesn't look like it's in UPS format: {}", .0)]
     FormatMismatch(String),
+    /// Calculated patch checksum doesn't match the one from the patch metadata. You can access the
+    /// patch in `parsed_patch` in case you want to ignore checksum errors.
     #[error(
         "Checksum mismatch for patch file: expected {}, got {}",
         .parsed_patch.patch_checksum,
@@ -23,6 +26,29 @@ pub enum UpsParseError {
 
 pub type UpsParseResult<T> = Result<T, UpsParseError>;
 
+/// Possible errors when applying or revering an UPS patch.
+#[derive(thiserror::Error, Debug)]
+pub enum UpsApplyError {
+    #[error("Source file size mismatch: expected {}, got {}", .expected, .actual)]
+    SourceSizeMismatch { expected: usize, actual: usize },
+    #[error("Source file checksum mismatch: expected {}, got {}", .expected, .actual)]
+    SourceChecksumMismatch {
+        expected: Checksum,
+        actual: Checksum,
+    },
+    #[error("Destination file size mismatch: expected {}, got {}", .expected, .actual)]
+    DestSizeMismatch { expected: usize, actual: usize },
+    #[error("Destination file checksum mismatch: expected {}, got {}", .expected, .actual)]
+    DestChecksumMismatch {
+        expected: Checksum,
+        actual: Checksum,
+    },
+}
+
+pub type UpsApplyResult<T> = Result<T, UpsApplyError>;
+
+/// Parsed UPS patch file. Use [`parse`] to instantiate and [`apply`] and [`revert`] to use the
+/// patch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Patch {
     pub hunks: Vec<Hunk>,
@@ -108,6 +134,93 @@ impl Patch {
         } else {
             Ok(parsed_patch)
         }
+    }
+
+    /// Apply patch to source data. Returns the contents of the patched file.
+    pub fn apply(&self, src: &[u8]) -> UpsApplyResult<Vec<u8>> {
+        if src.len() != self.src_size {
+            return Err(UpsApplyError::SourceSizeMismatch {
+                expected: self.src_size,
+                actual: src.len(),
+            });
+        }
+
+        let src_checksum = Checksum::from_bytes(&src);
+        if src_checksum != self.src_checksum {
+            return Err(UpsApplyError::SourceChecksumMismatch {
+                expected: self.src_checksum,
+                actual: src_checksum,
+            });
+        }
+
+        let mut output = src.to_vec();
+        output.resize(self.dst_size, 0);
+
+        let mut output_ptr: &mut [u8] = &mut output;
+        for hunk in &self.hunks {
+            output_ptr = &mut output_ptr[hunk.offset..];
+            for (out_byte, patch_byte) in output_ptr.iter_mut().zip(&hunk.xor_data) {
+                *out_byte ^= patch_byte;
+            }
+            if hunk.xor_data.len() >= output_ptr.len() {
+                break;
+            }
+            output_ptr = &mut output_ptr[hunk.xor_data.len()..];
+        }
+
+        let dst_checksum = Checksum::from_bytes(&output);
+        if dst_checksum != self.dst_checksum {
+            return Err(UpsApplyError::DestChecksumMismatch {
+                expected: self.dst_checksum,
+                actual: dst_checksum,
+            });
+        }
+
+        Ok(output)
+    }
+
+    /// Revert patch applied to the given buffer. Returns the contents of the reverted file.
+    pub fn revert(&self, dst: &[u8]) -> UpsApplyResult<Vec<u8>> {
+        if dst.len() != self.dst_size {
+            return Err(UpsApplyError::DestSizeMismatch {
+                expected: self.dst_size,
+                actual: dst.len(),
+            });
+        }
+
+        let dst_checksum = Checksum::from_bytes(&dst);
+        if dst_checksum != self.dst_checksum {
+            return Err(UpsApplyError::DestChecksumMismatch {
+                expected: self.dst_checksum,
+                actual: dst_checksum,
+            });
+        }
+
+        let mut output = dst[..self.src_size].to_vec();
+        let mut output_ptr: &mut [u8] = &mut output;
+        for hunk in &self.hunks {
+            if hunk.offset >= output_ptr.len() {
+                break;
+            }
+            output_ptr = &mut output_ptr[hunk.offset..];
+            for (out_byte, patch_byte) in output_ptr.iter_mut().zip(&hunk.xor_data) {
+                *out_byte ^= patch_byte;
+            }
+            if hunk.xor_data.len() >= output_ptr.len() {
+                break;
+            }
+            output_ptr = &mut output_ptr[hunk.xor_data.len()..];
+        }
+
+        let src_checksum = Checksum::from_bytes(&output);
+        if src_checksum != self.src_checksum {
+            return Err(UpsApplyError::SourceChecksumMismatch {
+                expected: self.src_checksum,
+                actual: src_checksum,
+            });
+        }
+
+        Ok(output)
     }
 }
 

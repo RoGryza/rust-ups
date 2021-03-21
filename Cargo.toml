@@ -10,12 +10,14 @@ path = "src/main.rs"
 required-features = ["cli"]
 
 [features]
-cli = []
+cli = ["structopt"]
 
 [dependencies]
 crc32fast = "^1.2.1"
 memchr = "^2.3.4"
 thiserror = "^1"
+
+structopt = { version = "^0.3.21", optional = true }
 
 [dev-dependencies]
 proptest = "^1.0.0"
