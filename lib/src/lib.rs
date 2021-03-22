@@ -1,7 +1,8 @@
 //! Parse, apply and revert UPS patches.
 //!
 //! ## Note
-//! This crate was not designed to handle large files, it reads files to completion into memory.
+//! This crate was not designed to handle large files, it reads entire files into memory at once
+//! and keeps this data around to apply patches.
 //!
 //! ## Example
 //!
@@ -17,12 +18,9 @@
 //!
 //! # Ok::<_, Box<dyn std::error::Error>>(())
 //! ```
-#![deny(warnings)]
 mod checksum;
-#[cfg(feature = "cli")]
-pub mod cli;
 mod patch;
 mod varint;
 
 pub use checksum::Checksum;
-pub use patch::{Patch, UpsApplyError, UpsParseError};
+pub use patch::{Patch, PatchDirection, UpsParseError, UpsPatchError};

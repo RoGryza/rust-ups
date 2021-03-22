@@ -1,0 +1,14 @@
+[package]
+name = "ups-cli"
+version = "0.1.0"
+authors = ["Rodrigo Gryzinski <rogryza@gmail.com>"]
+edition = "2018"
+
+[[bin]]
+name = "upstool"
+path = "src/main.rs"
+
+[dependencies]
+ups = { path = "../lib" }
+structopt = "^0.3.21"
+thiserror = "^1"

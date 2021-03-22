@@ -2,7 +2,7 @@ use std::fs;
 
 use ups::Patch;
 
-const RAW_SRC: &[u8] = include_bytes!("../samples/rom.bin");
+const RAW_SRC: &[u8] = include_bytes!("../../samples/rom.bin");
 
 #[ignore]
 #[test]
@@ -23,7 +23,7 @@ fn test_roundtrip_unbound() {
 }
 
 fn test_roundtrip(patch: &str) {
-    let raw_patch = fs::read(&format!("samples/{}", patch)).unwrap();
+    let raw_patch = fs::read(&format!("../samples/{}", patch)).unwrap();
     let patch = Patch::parse(&raw_patch).unwrap();
 
     let patched = patch.apply(RAW_SRC).unwrap();

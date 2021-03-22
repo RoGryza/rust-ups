@@ -1,23 +1,5 @@
-[package]
-name = "ups"
-version = "0.1.0"
-authors = ["Rodrigo Gryzinski <rogryza@gmail.com>"]
-edition = "2018"
-
-[[bin]]
-name = "upstool"
-path = "src/main.rs"
-required-features = ["cli"]
-
-[features]
-cli = ["structopt"]
-
-[dependencies]
-crc32fast = "^1.2.1"
-memchr = "^2.3.4"
-thiserror = "^1"
-
-structopt = { version = "^0.3.21", optional = true }
-
-[dev-dependencies]
-proptest = "^1.0.0"
+[workspace]
+members = [
+  "lib",
+  "cli",
+]

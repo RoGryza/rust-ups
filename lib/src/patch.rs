@@ -26,26 +26,62 @@ pub enum UpsParseError {
 
 pub type UpsParseResult<T> = Result<T, UpsParseError>;
 
-/// Possible errors when applying or revering an UPS patch.
+/// Possible errors when applying or reverting an UPS patch.
 #[derive(thiserror::Error, Debug)]
-pub enum UpsApplyError {
-    #[error("Source file size mismatch: expected {}, got {}", .expected, .actual)]
-    SourceSizeMismatch { expected: usize, actual: usize },
-    #[error("Source file checksum mismatch: expected {}, got {}", .expected, .actual)]
-    SourceChecksumMismatch {
-        expected: Checksum,
-        actual: Checksum,
+pub enum UpsPatchError {
+    #[error("Source file {}", .0)]
+    SourceMetadataMismatch(MetadataMismatch),
+    #[error("Destination file {}", .0)]
+    DestMetadataMismatch(MetadataMismatch),
+}
+
+pub type UpsPatchResult<T> = Result<T, UpsPatchError>;
+
+/// Kinds of metadata mismatches for [`UpsPatchError`].
+#[derive(Debug)]
+pub enum MetadataMismatch {
+    Size {
+        expected: usize,
+        actual: usize,
     },
-    #[error("Destination file size mismatch: expected {}, got {}", .expected, .actual)]
-    DestSizeMismatch { expected: usize, actual: usize },
-    #[error("Destination file checksum mismatch: expected {}, got {}", .expected, .actual)]
-    DestChecksumMismatch {
+    Checksum {
         expected: Checksum,
         actual: Checksum,
     },
 }
 
-pub type UpsApplyResult<T> = Result<T, UpsApplyError>;
+impl MetadataMismatch {
+    pub fn size(expected: usize, actual: usize) -> Option<Self> {
+        if expected == actual {
+            None
+        } else {
+            Some(MetadataMismatch::Size { expected, actual })
+        }
+    }
+
+    pub fn checksum(expected: Checksum, actual: Checksum) -> Option<Self> {
+        if expected == actual {
+            None
+        } else {
+            Some(MetadataMismatch::Checksum { expected, actual })
+        }
+    }
+}
+
+impl Display for MetadataMismatch {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match self {
+            MetadataMismatch::Size { expected, actual } => {
+                write!(f, "size mismatch: expected {}, got {}", expected, actual)
+            }
+            MetadataMismatch::Checksum { expected, actual } => write!(
+                f,
+                "checksum mismatch: expected {}, got {}",
+                expected, actual
+            ),
+        }
+    }
+}
 
 /// Parsed UPS patch file. Use [`parse`] to instantiate and [`apply`] and [`revert`] to use the
 /// patch.
@@ -63,6 +99,58 @@ pub struct Patch {
 pub struct Hunk {
     pub offset: usize,
     pub xor_data: Vec<u8>,
+}
+
+/// Patching direction, either from source to patched file or back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PatchDirection {
+    /// Apply the patch to the source file.
+    Apply,
+    /// Get source file from patched file.
+    Revert,
+}
+
+// Struct to help implement apply/revert as a single function in Patch::patch.
+// input is the input file, src for Apply and dst for Revert. output is the other way around, dst
+// for Apply and src for Revert.
+struct DirectionMetadata {
+    input_size: usize,
+    input_checksum: Checksum,
+    output_size: usize,
+    output_checksum: Checksum,
+}
+
+impl PatchDirection {
+    fn metadata(&self, patch: &Patch) -> DirectionMetadata {
+        match self {
+            PatchDirection::Apply => DirectionMetadata {
+                input_size: patch.src_size,
+                input_checksum: patch.src_checksum,
+                output_size: patch.dst_size,
+                output_checksum: patch.dst_checksum,
+            },
+            PatchDirection::Revert => DirectionMetadata {
+                input_size: patch.dst_size,
+                input_checksum: patch.dst_checksum,
+                output_size: patch.src_size,
+                output_checksum: patch.src_checksum,
+            },
+        }
+    }
+
+    fn input_metadata_error(&self, mismatch: MetadataMismatch) -> UpsPatchError {
+        match self {
+            PatchDirection::Apply => UpsPatchError::SourceMetadataMismatch(mismatch),
+            PatchDirection::Revert => UpsPatchError::DestMetadataMismatch(mismatch),
+        }
+    }
+
+    fn output_metadata_error(&self, mismatch: MetadataMismatch) -> UpsPatchError {
+        match self {
+            PatchDirection::Apply => UpsPatchError::DestMetadataMismatch(mismatch),
+            PatchDirection::Revert => UpsPatchError::SourceMetadataMismatch(mismatch),
+        }
+    }
 }
 
 impl Patch {
@@ -136,25 +224,25 @@ impl Patch {
         }
     }
 
-    /// Apply patch to source data. Returns the contents of the patched file.
-    pub fn apply(&self, src: &[u8]) -> UpsApplyResult<Vec<u8>> {
-        if src.len() != self.src_size {
-            return Err(UpsApplyError::SourceSizeMismatch {
-                expected: self.src_size,
-                actual: src.len(),
-            });
+    /// Applies or reverts a patch on the given buffer and return the raw output bytes.
+    pub fn patch(&self, direction: PatchDirection, input: &[u8]) -> UpsPatchResult<Vec<u8>> {
+        let metadata = direction.metadata(self);
+
+        if let Some(err) = MetadataMismatch::size(metadata.input_size, input.len()) {
+            return Err(direction.input_metadata_error(err));
+        }
+        let input_checksum = Checksum::from_bytes(input);
+        if let Some(err) = MetadataMismatch::checksum(metadata.input_checksum, input_checksum) {
+            return Err(direction.input_metadata_error(err));
         }
 
-        let src_checksum = Checksum::from_bytes(&src);
-        if src_checksum != self.src_checksum {
-            return Err(UpsApplyError::SourceChecksumMismatch {
-                expected: self.src_checksum,
-                actual: src_checksum,
-            });
-        }
-
-        let mut output = src.to_vec();
-        output.resize(self.dst_size, 0);
+        let mut output = if metadata.input_size < metadata.output_size {
+            let mut v = input.to_vec();
+            v.resize(metadata.output_size, 0);
+            v
+        } else {
+            input[..metadata.output_size].to_vec()
+        };
 
         let mut output_ptr: &mut [u8] = &mut output;
         for hunk in &self.hunks {
@@ -168,59 +256,22 @@ impl Patch {
             output_ptr = &mut output_ptr[hunk.xor_data.len()..];
         }
 
-        let dst_checksum = Checksum::from_bytes(&output);
-        if dst_checksum != self.dst_checksum {
-            return Err(UpsApplyError::DestChecksumMismatch {
-                expected: self.dst_checksum,
-                actual: dst_checksum,
-            });
+        let output_checksum = Checksum::from_bytes(&output);
+        if let Some(err) = MetadataMismatch::checksum(metadata.output_checksum, output_checksum) {
+            return Err(direction.output_metadata_error(err));
         }
 
         Ok(output)
     }
 
+    /// Apply patch to source data. Returns the contents of the patched file.
+    pub fn apply(&self, src: &[u8]) -> UpsPatchResult<Vec<u8>> {
+        self.patch(PatchDirection::Apply, src)
+    }
+
     /// Revert patch applied to the given buffer. Returns the contents of the reverted file.
-    pub fn revert(&self, dst: &[u8]) -> UpsApplyResult<Vec<u8>> {
-        if dst.len() != self.dst_size {
-            return Err(UpsApplyError::DestSizeMismatch {
-                expected: self.dst_size,
-                actual: dst.len(),
-            });
-        }
-
-        let dst_checksum = Checksum::from_bytes(&dst);
-        if dst_checksum != self.dst_checksum {
-            return Err(UpsApplyError::DestChecksumMismatch {
-                expected: self.dst_checksum,
-                actual: dst_checksum,
-            });
-        }
-
-        let mut output = dst[..self.src_size].to_vec();
-        let mut output_ptr: &mut [u8] = &mut output;
-        for hunk in &self.hunks {
-            if hunk.offset >= output_ptr.len() {
-                break;
-            }
-            output_ptr = &mut output_ptr[hunk.offset..];
-            for (out_byte, patch_byte) in output_ptr.iter_mut().zip(&hunk.xor_data) {
-                *out_byte ^= patch_byte;
-            }
-            if hunk.xor_data.len() >= output_ptr.len() {
-                break;
-            }
-            output_ptr = &mut output_ptr[hunk.xor_data.len()..];
-        }
-
-        let src_checksum = Checksum::from_bytes(&output);
-        if src_checksum != self.src_checksum {
-            return Err(UpsApplyError::SourceChecksumMismatch {
-                expected: self.src_checksum,
-                actual: src_checksum,
-            });
-        }
-
-        Ok(output)
+    pub fn revert(&self, dst: &[u8]) -> UpsPatchResult<Vec<u8>> {
+        self.patch(PatchDirection::Revert, dst)
     }
 }
 

@@ -1,6 +1,6 @@
 use std::process::exit;
 
-use ups::cli::Args;
+use ups_cli::Args;
 
 fn main() {
     let args = Args::from_args();

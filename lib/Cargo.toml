@@ -1,0 +1,13 @@
+[package]
+name = "ups"
+version = "0.1.0"
+authors = ["Rodrigo Gryzinski <rogryza@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+crc32fast = "^1.2.1"
+memchr = "^2.3.4"
+thiserror = "^1"
+
+[dev-dependencies]
+proptest = "^1.0.0"
