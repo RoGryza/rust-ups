@@ -2,31 +2,26 @@ use std::fs;
 
 use ups::Patch;
 
-const RAW_SRC: &[u8] = include_bytes!("../../samples/rom.bin");
-
 #[ignore]
 #[test]
-fn test_roundtrip_rr_2_2b() {
-    test_roundtrip("rr-2-2b.ups");
+fn test_samples() {
+    let raw_src = fs::read("../samples/rom.bin").unwrap();
+    for entry in fs::read_dir("../samples").unwrap().map(Result::unwrap) {
+        if entry.metadata().unwrap().is_file() {
+            let filename = entry.file_name().into_string().unwrap();
+            if filename.ends_with(".ups") {
+                test_roundtrip(&raw_src, &filename);
+            }
+        }
+    }
 }
 
-#[ignore]
-#[test]
-fn test_roundtrip_yafrrrofr() {
-    test_roundtrip("YAFRROFR.ups");
-}
-
-#[ignore]
-#[test]
-fn test_roundtrip_unbound() {
-    test_roundtrip("unbound.ups");
-}
-
-fn test_roundtrip(patch: &str) {
+fn test_roundtrip(raw_src: &[u8], patch: &str) {
+    println!("Testing file {}", patch);
     let raw_patch = fs::read(&format!("../samples/{}", patch)).unwrap();
     let patch = Patch::parse(&raw_patch).unwrap();
 
-    let patched = patch.apply(RAW_SRC).unwrap();
+    let patched = patch.apply(&raw_src).unwrap();
     let reverted = patch.revert(&patched).unwrap();
-    assert_eq!(RAW_SRC, reverted);
+    assert_eq!(raw_src, reverted);
 }
