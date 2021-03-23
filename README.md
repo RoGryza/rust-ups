@@ -1,7 +1,7 @@
 # Rust UPS
 
 This is a Rust crate for parsing and applying UPS binary patches and a CLI tool to apply and revert
-said files.
+them.
 
 ## Requirements
 
