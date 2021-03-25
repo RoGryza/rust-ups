@@ -5,12 +5,6 @@ use crc32fast::Hasher;
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Checksum(pub u32);
 
-#[derive(Debug, Clone)]
-pub struct ChecksumStream<S> {
-    inner: S,
-    hasher: Hasher,
-}
-
 impl Checksum {
     pub fn from_bytes(data: &[u8]) -> Self {
         let mut hasher = Hasher::new();

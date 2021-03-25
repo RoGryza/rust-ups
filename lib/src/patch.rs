@@ -320,7 +320,6 @@ mod test {
 
     proptest! {
         // TODO assert parser fails when there isn't enough input
-
         // TODO generate problematic data for testing, this is just a placeholder dumb "fuzzer"
         #[test]
         fn test_garbage(mut raw in vec(any::<u8>(), 0..4096)) {
