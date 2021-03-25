@@ -10,5 +10,5 @@ path = "src/main.rs"
 
 [dependencies]
 ups = { path = "../lib" }
-structopt = "^0.3.21"
-thiserror = "^1"
+thiserror = "1"
+structopt = "0.3.21"
