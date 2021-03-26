@@ -23,4 +23,4 @@ mod patch;
 mod varint;
 
 pub use checksum::Checksum;
-pub use patch::{Patch, PatchDirection, UpsParseError, UpsPatchError};
+pub use patch::{Patch, PatchDirection, UpsParseError, UpsPatchError, UpsPatchErrors};

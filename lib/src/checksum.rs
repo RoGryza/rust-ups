@@ -2,10 +2,12 @@ use std::fmt::{self, Debug, Display, Formatter, LowerHex, UpperHex};
 
 use crc32fast::Hasher;
 
+/// A CRC-32 checksum.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Checksum(pub u32);
 
 impl Checksum {
+    /// Calculate `data` checksum.
     pub fn from_bytes(data: &[u8]) -> Self {
         let mut hasher = Hasher::new();
         hasher.update(&data);

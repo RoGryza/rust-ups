@@ -20,7 +20,7 @@ use std::path::PathBuf;
 
 use structopt::StructOpt;
 
-use ups::{Patch, UpsParseError, UpsPatchError};
+use ups::{Patch, UpsParseError, UpsPatchErrors};
 
 pub use structopt;
 pub use ups::{self, PatchDirection};
@@ -68,7 +68,7 @@ pub enum RunError {
     #[error(transparent)]
     Parse(#[from] UpsParseError),
     #[error(transparent)]
-    Patch(#[from] UpsPatchError),
+    Patch(#[from] UpsPatchErrors),
 }
 
 impl Args {

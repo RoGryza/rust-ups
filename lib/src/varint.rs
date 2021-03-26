@@ -1,13 +1,12 @@
 pub fn read_bytes(buf: &mut &[u8]) -> Option<usize> {
     let mut varint = 0;
     let mut shift = 0;
-    let mut cursor = *buf;
     loop {
-        let (c, next_cursor) = match cursor.split_first() {
+        let (c, next_buf) = match buf.split_first() {
             Some(s) => s,
             None => return None,
         };
-        cursor = next_cursor;
+        *buf = next_buf;
         if c & 0x80 != 0 {
             varint = varint_add_shifted(varint, c & 0x7f, shift)?;
             break;
@@ -15,7 +14,6 @@ pub fn read_bytes(buf: &mut &[u8]) -> Option<usize> {
         varint = varint_add_shifted(varint, c | 0x80, shift)?;
         shift += 7;
     }
-    *buf = cursor;
     Some(varint)
 }
 

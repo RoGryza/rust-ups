@@ -1,5 +1,6 @@
 use std::convert::TryInto;
-use std::fmt::{self, Display, Formatter};
+use std::error::Error;
+use std::fmt::{self, Debug, Display, Formatter};
 
 use memchr::memchr;
 
@@ -26,6 +27,70 @@ pub enum UpsParseError {
 
 pub type UpsParseResult<T> = Result<T, UpsParseError>;
 
+/// Collection of errors returned from patching. You can access the patched file in `output` in
+/// case you want to ignore the errors. Use [`errors`] and [`into_errors`] to inspect errors.
+pub struct UpsPatchErrors {
+    /// Possibly invalid output from the patch operation.
+    pub output: Vec<u8>,
+    // Standalone error so we can't represent invalid states (empty error list).
+    fst_error: UpsPatchError,
+    errors: Vec<UpsPatchError>,
+}
+
+impl UpsPatchErrors {
+    /// Smart constructor, returns `Err` if there are any errors in `errors`, else returns
+    /// `Ok(output)`.
+    pub fn check_errors(output: Vec<u8>, mut errors: Vec<UpsPatchError>) -> Result<Vec<u8>, Self> {
+        // There's no order for errors, so we just pop fst_error from errors.
+        match errors.pop() {
+            Some(fst_error) => Err(UpsPatchErrors {
+                output,
+                fst_error,
+                errors,
+            }),
+            None => Ok(output),
+        }
+    }
+
+    /// Iterate over all patching errors by reference.
+    pub fn errors(&self) -> impl Iterator<Item = &UpsPatchError> {
+        std::iter::once(&self.fst_error).chain(&self.errors)
+    }
+
+    /// Consume self and return and iterator over all patching errors.
+    pub fn into_errors(self) -> impl Iterator<Item = UpsPatchError> {
+        std::iter::once(self.fst_error).chain(self.errors)
+    }
+}
+
+impl Debug for UpsPatchErrors {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        f.debug_struct("UpsPatchErrors")
+            .field("errors", &self.errors)
+            .finish()
+    }
+}
+
+impl Display for UpsPatchErrors {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        if self.errors.is_empty() {
+            write!(f, "{}", self.fst_error)?;
+        } else {
+            write!(f, "Multiple errors: {}", self.fst_error)?;
+            for err in &self.errors {
+                write!(f, ", {}", err)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Error for UpsPatchErrors {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.fst_error)
+    }
+}
+
 /// Possible errors when applying or reverting an UPS patch.
 #[derive(thiserror::Error, Debug)]
 pub enum UpsPatchError {
@@ -35,7 +100,7 @@ pub enum UpsPatchError {
     DestMetadataMismatch(MetadataMismatch),
 }
 
-pub type UpsPatchResult<T> = Result<T, UpsPatchError>;
+pub type UpsPatchResult<T> = Result<T, UpsPatchErrors>;
 
 /// Kinds of metadata mismatches for [`UpsPatchError`].
 #[derive(Debug)]
@@ -165,10 +230,7 @@ impl Patch {
         }
 
         // Calculate patch checksum before doing any changes to input
-        let mut patch_hasher = crc32fast::Hasher::new();
-        patch_hasher.update(&input[..input.len() - 4]);
-        let actual_patch_checksum = Checksum(patch_hasher.finalize());
-
+        let actual_patch_checksum = Checksum::from_bytes(&input[..input.len() - 4]);
         input = &input[4..];
 
         let src_size = varint::read_bytes(&mut input).ok_or_else(|| {
@@ -227,25 +289,25 @@ impl Patch {
     /// Applies or reverts a patch on the given buffer and return the raw output bytes.
     pub fn patch(&self, direction: PatchDirection, input: &[u8]) -> UpsPatchResult<Vec<u8>> {
         let metadata = direction.metadata(self);
+        let mut errors = Vec::new();
 
         if let Some(err) = MetadataMismatch::size(metadata.input_size, input.len()) {
-            return Err(direction.input_metadata_error(err));
+            errors.push(direction.input_metadata_error(err));
         }
         let input_checksum = Checksum::from_bytes(input);
         if let Some(err) = MetadataMismatch::checksum(metadata.input_checksum, input_checksum) {
-            return Err(direction.input_metadata_error(err));
+            errors.push(direction.input_metadata_error(err));
         }
 
-        let mut output = if metadata.input_size < metadata.output_size {
-            let mut v = input.to_vec();
-            v.resize(metadata.output_size, 0);
-            v
-        } else {
-            input[..metadata.output_size].to_vec()
-        };
+        let mut output = vec![0; metadata.output_size];
+        let input_copy_len = std::cmp::min(metadata.output_size, metadata.input_size);
+        output[..input_copy_len].copy_from_slice(&input[..input_copy_len]);
 
         let mut output_ptr: &mut [u8] = &mut output;
         for hunk in &self.hunks {
+            if hunk.offset >= output_ptr.len() {
+                break;
+            }
             output_ptr = &mut output_ptr[hunk.offset..];
             for (out_byte, patch_byte) in output_ptr.iter_mut().zip(&hunk.xor_data) {
                 *out_byte ^= patch_byte;
@@ -258,10 +320,10 @@ impl Patch {
 
         let output_checksum = Checksum::from_bytes(&output);
         if let Some(err) = MetadataMismatch::checksum(metadata.output_checksum, output_checksum) {
-            return Err(direction.output_metadata_error(err));
+            errors.push(direction.output_metadata_error(err));
         }
 
-        Ok(output)
+        UpsPatchErrors::check_errors(output, errors)
     }
 
     /// Apply patch to source data. Returns the contents of the patched file.
@@ -282,7 +344,7 @@ impl<'a> Display for EscapeNonAscii<'a> {
         let mut chars = self.0.iter().peekable();
         while let Some(c) = chars.next() {
             if c.is_ascii() {
-                (*c as char).fmt(f)?;
+                write!(f, "{}", *c as char)?;
             } else {
                 write!(f, "{:02X}", c)?;
             }
@@ -331,12 +393,13 @@ mod test {
         }
 
         #[test]
-        fn test_patch_metadata_ok(data in patches()) {
+        fn test_patch_ok(data in patches()) {
             let parsed = Patch::parse(&data.serialized).unwrap();
             prop_assert_eq!(data.patch.src_size, parsed.src_size);
             prop_assert_eq!(data.patch.src_checksum, parsed.src_checksum);
             prop_assert_eq!(data.patch.dst_size, parsed.dst_size);
             prop_assert_eq!(data.patch.dst_checksum, parsed.dst_checksum);
+            prop_assert_eq!(data.patch.hunks, parsed.hunks);
         }
 
         #[test]
@@ -360,12 +423,6 @@ mod test {
                 }
                 _ => prop_assert!(false, "Expected PatchChecksumMismatch, got {}", err),
             }
-        }
-
-        #[test]
-        fn test_patch_hunks_ok(data in patches()) {
-            let patch = Patch::parse(&data.serialized).unwrap();
-            assert_eq!(data.patch.hunks, patch.hunks);
         }
     }
 
@@ -398,9 +455,7 @@ mod test {
 
             bytes.extend_from_slice(&src_checksum.0.to_le_bytes());
             bytes.extend_from_slice(&dst_checksum.0.to_le_bytes());
-            let mut hasher = crc32fast::Hasher::new();
-            hasher.update(&bytes);
-            let patch_checksum = Checksum(hasher.finalize());
+            let patch_checksum = Checksum::from_bytes(&bytes);
             bytes.extend_from_slice(&patch_checksum.0.to_le_bytes());
 
             PatchData {
