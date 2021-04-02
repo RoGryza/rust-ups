@@ -1,7 +1,7 @@
 # Rust UPS
 
-This is a Rust crate for parsing and applying UPS binary patches and a CLI tool to apply and revert
-them.
+This is a Rust crate for parsing, applying and creating UPS binary patches and a CLI tool exposing
+these functions.
 
 ## Requirements
 
@@ -12,6 +12,10 @@ them.
 ## Quickstart
 
 ## Testing
+
+## Contributing
+
+* explain nomenclature (src, dst, patch, files, hunks).
 
 ## References
 

@@ -20,6 +20,7 @@
 //! ```
 mod checksum;
 mod patch;
+mod util;
 mod varint;
 
 pub use checksum::Checksum;

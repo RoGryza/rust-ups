@@ -31,6 +31,8 @@ pub use ups::{self, PatchDirection};
 pub enum Args {
     /// Apply or revert UPS patches.
     Patch(PatchArgs),
+    /// Generate UPS patch from input files.
+    Generate(GenerateArgs),
 }
 
 /// Arguments for patch subcommand.
@@ -60,6 +62,17 @@ fn parse_direction(s: &str) -> Result<PatchDirection, String> {
     }
 }
 
+/// Arguments for generate subcommand.
+#[derive(Debug, StructOpt)]
+pub struct GenerateArgs {
+    /// Path to source file.
+    pub source: PathBuf,
+    /// Path to destination file.
+    pub dest: PathBuf,
+    /// Path to output patch file or - for stdout.
+    pub patch: Option<PathBuf>,
+}
+
 /// Possible errors for any CLI command.
 #[derive(thiserror::Error, Debug)]
 pub enum RunError {
@@ -84,6 +97,7 @@ impl Args {
     pub fn run(&self) -> Result<(), RunError> {
         match self {
             Args::Patch(args) => patch(args),
+            Args::Generate(args) => generate(args),
         }
     }
 }
@@ -113,17 +127,40 @@ pub fn patch(args: &PatchArgs) -> Result<(), RunError> {
         .map_err(|e| RunError::Io(format!("Failed to read input file {}", input_filename), e))?;
 
     let output_data = patch.patch(args.direction, &input_data)?;
+    write_output(&args.output, &output_data)
+}
 
-    let (output_filename, output_stream_res) = match &args.output {
-        Some(p) => (format!("\"{}\"", p.display()), fs::write(p, &output_data)),
-        None => ("<stdout>".to_string(), io::stdout().write_all(&output_data)),
-    };
-    output_stream_res.map_err(|e| {
+/// Implementation for the generate subcommand.
+pub fn generate(args: &GenerateArgs) -> Result<(), RunError> {
+    let src = fs::read(&args.source).map_err(|e| {
         RunError::Io(
-            format!("Failed to write to output file {}", output_filename,),
+            format!("Failed to read source file \"{}\"", args.source.display()),
             e,
         )
     })?;
+    let dst = fs::read(&args.dest).map_err(|e| {
+        RunError::Io(
+            format!(
+                "Failed to read destination file \"{}\"",
+                args.dest.display()
+            ),
+            e,
+        )
+    })?;
+    let patch = Patch::from_files(&src, &dst);
+    write_output(&args.patch, &patch.serialize())
+}
 
+fn write_output(path: &Option<PathBuf>, data: &[u8]) -> Result<(), RunError> {
+    let (output_filename, output_stream_res) = match path {
+        Some(p) => (format!("\"{}\"", p.display()), fs::write(p, data)),
+        None => ("<stdout>".to_string(), io::stdout().write_all(data)),
+    };
+    output_stream_res.map_err(|e| {
+        RunError::Io(
+            format!("Failed to write to output file {}", output_filename),
+            e,
+        )
+    })?;
     Ok(())
 }

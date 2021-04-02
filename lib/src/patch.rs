@@ -7,6 +7,8 @@ use memchr::memchr;
 use crate::checksum::Checksum;
 use crate::varint;
 
+const MAGIC: &[u8] = b"UPS1";
+
 /// Possible errors when parsing an UPS patch file.
 #[derive(thiserror::Error, Debug)]
 pub enum UpsParseError {
@@ -16,11 +18,11 @@ pub enum UpsParseError {
     /// patch in `parsed_patch` in case you want to ignore checksum errors.
     #[error(
         "Checksum mismatch for patch file: expected {}, got {}",
-        .parsed_patch.patch_checksum,
-        .actual,
+        .expected, .actual,
     )]
     PatchChecksumMismatch {
         parsed_patch: Patch,
+        expected: Checksum,
         actual: Checksum,
     },
 }
@@ -65,8 +67,10 @@ impl UpsPatchErrors {
 
 impl Debug for UpsPatchErrors {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        let mut dbg_errors = vec![&self.fst_error];
+        dbg_errors.extend(&self.errors);
         f.debug_struct("UpsPatchErrors")
-            .field("errors", &self.errors)
+            .field("errors", &dbg_errors)
             .finish()
     }
 }
@@ -148,19 +152,30 @@ impl Display for MetadataMismatch {
     }
 }
 
-/// Parsed UPS patch file. Use [`parse`] to instantiate and [`apply`] and [`revert`] to use the
-/// patch.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Parsed UPS patch file. Use [`parse`] or [`from_files`] to instantiate, [`apply`] and
+/// [`revert`] to use the patch.
+///
+/// Besides metadata for validation, a patch consists of a series of [`Hunk`]s. Each hunk contains
+/// an offset from the current _file pointer_ to the next different byte and a sequence of source
+/// file bytes XORed with destination file bytes, meaning the patch can be applied by calculating
+/// _src XOR patch_ and reverted by calculating _dst XOR patch_.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Patch {
+    /// All hunks for the patch, in order.
     pub hunks: Vec<Hunk>,
+    /// Source file size.
     pub src_size: usize,
+    /// Source file checksum.
     pub src_checksum: Checksum,
+    /// Destination file size.
     pub dst_size: usize,
+    /// Destination file checksum.
     pub dst_checksum: Checksum,
-    pub patch_checksum: Checksum,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The body of UPS patches is a sequence of [`Hunk`]s. See documentation for [`Patch`] for how to
+/// use hunks.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Hunk {
     pub offset: usize,
     pub xor_data: Vec<u8>,
@@ -220,7 +235,6 @@ impl PatchDirection {
 
 impl Patch {
     pub fn parse(mut input: &[u8]) -> UpsParseResult<Self> {
-        const MAGIC: &[u8] = b"UPS1";
         if !input.starts_with(MAGIC) {
             return Err(UpsParseError::FormatMismatch(format!(
                 "invalid preamble, expected \"{}\", found \"{}\"",
@@ -273,17 +287,83 @@ impl Patch {
             src_checksum,
             dst_size,
             dst_checksum,
-            patch_checksum,
         };
 
         if actual_patch_checksum != patch_checksum {
             Err(UpsParseError::PatchChecksumMismatch {
                 parsed_patch,
+                expected: patch_checksum,
                 actual: actual_patch_checksum,
             })
         } else {
             Ok(parsed_patch)
         }
+    }
+
+    /// Calculate a patch by comparing the source and destination files.
+    pub fn from_files(src: &[u8], dst: &[u8]) -> Self {
+        use crate::util::SliceDiffs;
+
+        let mut hunks = Vec::new();
+        let mut prev_end = 0;
+        for diff_range in SliceDiffs::new(src, dst) {
+            let offset = diff_range.start - prev_end;
+            let xor_data = src[diff_range.clone()]
+                .iter()
+                .zip(&dst[diff_range.clone()])
+                .map(|(a, b)| a ^ b)
+                .collect();
+            // We know that data doesn't contain zeroes, because that would imply we got a
+            // SliceDiff with some equal bytes.
+            hunks.push(Hunk { offset, xor_data });
+            prev_end = diff_range.end;
+        }
+
+        // Emit leftover hunks if either file has pending data.
+        let (min_len, max_slice) = if src.len() < dst.len() {
+            (src.len(), dst)
+        } else {
+            (dst.len(), src)
+        };
+        let mut offset = min_len - prev_end;
+        // We need to split on 0 because UPS hunks are zero-terminated.
+        let mut pending_data = &max_slice[min_len..];
+        while !pending_data.is_empty() {
+            let split_pos = memchr::memchr(0, pending_data).map_or(pending_data.len(), |x| x + 1);
+            let (xor_data, next_pending_data) = pending_data.split_at(split_pos);
+            pending_data = next_pending_data;
+            hunks.push(Hunk {
+                offset,
+                xor_data: xor_data.to_vec(),
+            });
+            // Only the first offset is possibly non-zero, the remaining hunks are contiguous.
+            offset = 0;
+        }
+
+        Patch {
+            hunks,
+            src_size: src.len(),
+            src_checksum: Checksum::from_bytes(src),
+            dst_size: dst.len(),
+            dst_checksum: Checksum::from_bytes(dst),
+        }
+    }
+
+    /// Serialize this patch to the UPS patch file contents.
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut bytes = b"UPS1".to_vec();
+        varint::write_bytes(&mut bytes, self.src_size);
+        varint::write_bytes(&mut bytes, self.dst_size);
+        for hunk in &self.hunks {
+            varint::write_bytes(&mut bytes, hunk.offset);
+            bytes.extend(&hunk.xor_data);
+        }
+
+        bytes.extend_from_slice(&self.src_checksum.0.to_le_bytes());
+        bytes.extend_from_slice(&self.dst_checksum.0.to_le_bytes());
+        let patch_checksum = Checksum::from_bytes(&bytes);
+        bytes.extend_from_slice(&patch_checksum.0.to_le_bytes());
+        bytes
     }
 
     /// Applies or reverts a patch on the given buffer and return the raw output bytes.
@@ -370,6 +450,55 @@ fn read_checksum(buf: &mut &[u8]) -> UpsParseResult<Checksum> {
     }
 }
 
+impl Debug for Patch {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        f.debug_struct("Patch")
+            .field("src_size", &self.src_size)
+            .field("src_checksum", &self.src_checksum)
+            .field("dst_size", &self.dst_size)
+            .field("dst_checksum", &self.dst_checksum)
+            .field(
+                "hunks",
+                &MaybeTruncate {
+                    max_elements: 16,
+                    slice: &self.hunks,
+                },
+            )
+            .finish()
+    }
+}
+
+impl Debug for Hunk {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        f.debug_struct("Hunk")
+            .field("offset", &self.offset)
+            .field(
+                "xor_data",
+                &MaybeTruncate {
+                    max_elements: 16,
+                    slice: &self.xor_data,
+                },
+            )
+            .finish()
+    }
+}
+
+// Debug impl for slices which switches to "<size: {size}>" if `slice` has over `max_elements`.
+struct MaybeTruncate<'a, T> {
+    max_elements: usize,
+    slice: &'a [T],
+}
+
+impl<'a, T: Debug> Debug for MaybeTruncate<'a, T> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        if self.slice.len() <= self.max_elements {
+            Debug::fmt(self.slice, f)
+        } else {
+            write!(f, "<size: {}>", self.slice.len())
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -381,10 +510,9 @@ mod test {
     use proptest::prelude::*;
 
     proptest! {
-        // TODO assert parser fails when there isn't enough input
-        // TODO generate problematic data for testing, this is just a placeholder dumb "fuzzer"
+        // TODO generate problematic data for testing, this is just a placeholder dumb generator
         #[test]
-        fn test_garbage(mut raw in vec(any::<u8>(), 0..4096)) {
+        fn test_garbage_valid_magic(mut raw in vec(any::<u8>(), 0..4096)) {
             if raw.len() >= 4 {
                 // Set magic preamble to test other failure cases
                 raw[..4].copy_from_slice(b"UPS1");
@@ -393,33 +521,57 @@ mod test {
         }
 
         #[test]
-        fn test_patch_ok(data in patches()) {
-            let parsed = Patch::parse(&data.serialized).unwrap();
-            prop_assert_eq!(data.patch.src_size, parsed.src_size);
-            prop_assert_eq!(data.patch.src_checksum, parsed.src_checksum);
-            prop_assert_eq!(data.patch.dst_size, parsed.dst_size);
-            prop_assert_eq!(data.patch.dst_checksum, parsed.dst_checksum);
-            prop_assert_eq!(data.patch.hunks, parsed.hunks);
-        }
-
-        #[test]
-        fn test_patch_magic_err(magic in invalid_magic(), mut data in patches()) {
-            data.serialized[..4].copy_from_slice(&magic);
-            let err = Patch::parse(&data.serialized).unwrap_err();
+        fn test_patch_invalid_magic(magic in invalid_magic(), patch in patches()) {
+            let mut serialized = patch.serialize();
+            serialized[..4].copy_from_slice(&magic);
+            let err = Patch::parse(&serialized).unwrap_err();
             prop_assert!(matches!(err, UpsParseError::FormatMismatch(_)));
         }
 
         #[test]
-        fn test_patch_checksum_err(mut data in patches()) {
-            // Overwrite checksum
-            let checksum_offset = data.serialized.len() - 4;
-            data.serialized[checksum_offset..].copy_from_slice(&[0, 0, 0, 0]);
-            data.patch.patch_checksum = Checksum(0);
-            let err = Patch::parse(&data.serialized).unwrap_err();
+        fn test_parse_serialize_roundtrip(patch in patches()) {
+            let serialized = patch.serialize();
+            let parsed = Patch::parse(&serialized).unwrap();
+            prop_assert_eq!(patch.src_size, parsed.src_size);
+            prop_assert_eq!(patch.src_checksum, parsed.src_checksum);
+            prop_assert_eq!(patch.dst_size, parsed.dst_size);
+            prop_assert_eq!(patch.dst_checksum, parsed.dst_checksum);
+            prop_assert_eq!(patch.hunks, parsed.hunks);
+        }
+
+        #[test]
+        fn test_from_equal_files_results_in_empty_patch(f in files()) {
+            let patch = Patch::from_files(&f, &f);
+            prop_assert_eq!(patch.hunks, Vec::new());
+        }
+
+        #[test]
+        fn test_from_files_apply_results_in_dst(src in files(), dst in files()) {
+            let patch = Patch::from_files(&src, &dst);
+            let applied = patch.apply(&src).unwrap();
+            prop_assert_eq!(applied, dst);
+        }
+
+        #[test]
+        fn test_from_files_revert_results_in_src(src in files(), dst in files()) {
+            let patch = Patch::from_files(&src, &dst);
+            let applied = patch.revert(&dst).unwrap();
+            prop_assert_eq!(applied, src);
+        }
+
+        #[test]
+        fn test_patch_checksum_err(patch in patches(), checksum in file_checksums()) {
+            let mut serialized = patch.serialize();
+            // Overwrite patch checksum
+            let offset = serialized.len() - 4;
+            let real_checksum = Checksum(u32::from_le_bytes(serialized[offset..].try_into().unwrap()));
+            serialized[offset..].copy_from_slice(&checksum.0.to_le_bytes());
+            let err = Patch::parse(&serialized).unwrap_err();
             match err {
-                UpsParseError::PatchChecksumMismatch { parsed_patch, actual } => {
-                    prop_assert_ne!(actual, Checksum(0));
-                    prop_assert_eq!(parsed_patch, data.patch);
+                UpsParseError::PatchChecksumMismatch { parsed_patch, expected, actual } => {
+                    prop_assert_ne!(actual, checksum);
+                    prop_assert_ne!(expected, real_checksum);
+                    prop_assert_eq!(parsed_patch, patch);
                 }
                 _ => prop_assert!(false, "Expected PatchChecksumMismatch, got {}", err),
             }
@@ -430,46 +582,27 @@ mod test {
         array::uniform4(any::<u8>()).prop_filter("Valid magic", |v| v != b"UPS1")
     }
 
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    struct PatchData {
-        patch: Patch,
-        serialized: Vec<u8>,
-    }
-
     prop_compose! {
         fn patches()
-            (hunks in vec(patch_hunks(), 1..64),
+            (hunks in vec(patch_hunks(usize::MAX), 1..64),
              src_size in file_sizes(),
              src_checksum in file_checksums(),
              dst_size in file_sizes(),
              dst_checksum in file_checksums())
-            -> PatchData
+            -> Patch
         {
-            let mut bytes = b"UPS1".to_vec();
-            bytes.extend_from_slice(&varint::to_vec(src_size));
-            bytes.extend_from_slice(&varint::to_vec(dst_size));
-            for hunk in &hunks {
-                bytes.extend_from_slice(&varint::to_vec(hunk.offset));
-                bytes.extend(&hunk.xor_data);
-            }
-
-            bytes.extend_from_slice(&src_checksum.0.to_le_bytes());
-            bytes.extend_from_slice(&dst_checksum.0.to_le_bytes());
-            let patch_checksum = Checksum::from_bytes(&bytes);
-            bytes.extend_from_slice(&patch_checksum.0.to_le_bytes());
-
-            PatchData {
-                patch: Patch {
-                    hunks,
-                    src_size,
-                    src_checksum,
-                    dst_size,
-                    dst_checksum,
-                    patch_checksum,
-                },
-                serialized: bytes,
+            Patch {
+                hunks,
+                src_size,
+                src_checksum,
+                dst_size,
+                dst_checksum,
             }
         }
+    }
+
+    fn files() -> impl Strategy<Value = Vec<u8>> {
+        vec(any::<u8>(), 0..512)
     }
 
     fn file_sizes() -> impl Strategy<Value = usize> {
@@ -481,8 +614,8 @@ mod test {
     }
 
     prop_compose! {
-        fn patch_hunks()
-            (offset in any::<usize>(), xor_data in xor_data())
+        fn patch_hunks(max_offset: usize)
+            (offset in 0..max_offset, xor_data in xor_data())
                 -> Hunk
                 {
                     Hunk {

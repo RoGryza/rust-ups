@@ -25,20 +25,17 @@ fn varint_add_shifted(current: usize, x: u8, shift: u32) -> Option<usize> {
         .and_then(|x2| current.checked_add(x2))
 }
 
-#[cfg(test)]
-pub fn to_vec(mut varint: usize) -> Vec<u8> {
-    let mut result = Vec::new();
+pub fn write_bytes(buf: &mut Vec<u8>, mut varint: usize) {
     loop {
         let x = (varint & 0x7f) as u8;
         varint = varint >> 7;
         if varint == 0 {
-            result.push(x | 0x80);
+            buf.push(x | 0x80);
             break;
         }
-        result.push(x);
+        buf.push(x);
         varint -= 1;
     }
-    result
 }
 
 #[cfg(test)]
@@ -50,7 +47,7 @@ mod test {
     proptest! {
         #[test]
         fn test_roundtrip(x in any::<usize>()) {
-            let serialized = to_vec(x);
+            let serialized = varint_to_vec(x);
             let deserialized = read_bytes(&mut serialized.as_ref()).unwrap();
             prop_assert_eq!(x, deserialized);
         }
@@ -58,11 +55,17 @@ mod test {
 
     #[test]
     fn test_overflow() {
-        let mut serialized = to_vec(usize::MAX);
+        let mut serialized = varint_to_vec(usize::MAX);
         // Unset bit flag for last byte and append another one se we go over usize::MAX
         let last = serialized.len() - 1;
         serialized[last] &= 0x7f;
         serialized.push(1);
         assert_eq!(read_bytes(&mut serialized.as_ref()), None);
+    }
+
+    fn varint_to_vec(varint: usize) -> Vec<u8> {
+        let mut result = Vec::new();
+        write_bytes(&mut result, varint);
+        result
     }
 }
