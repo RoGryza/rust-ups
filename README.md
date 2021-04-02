@@ -5,6 +5,8 @@ these functions.
 
 ## Requirements
 
+- Cargo 1.50.0+
+
 ## CLI
 
 ### Installation

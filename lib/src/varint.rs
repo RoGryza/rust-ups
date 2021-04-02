@@ -28,7 +28,7 @@ fn varint_add_shifted(current: usize, x: u8, shift: u32) -> Option<usize> {
 pub fn write_bytes(buf: &mut Vec<u8>, mut varint: usize) {
     loop {
         let x = (varint & 0x7f) as u8;
-        varint = varint >> 7;
+        varint >>= 7;
         if varint == 0 {
             buf.push(x | 0x80);
             break;

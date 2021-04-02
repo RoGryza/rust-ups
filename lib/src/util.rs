@@ -26,7 +26,7 @@ impl<'a> Iterator for SliceDiffs<'a> {
             .iter()
             .zip(b)
             .position(|(a, b)| a == b)
-            .unwrap_or(std::cmp::min(a.len(), b.len()));
+            .unwrap_or_else(|| std::cmp::min(a.len(), b.len()));
         self.a = &a[rel_end..];
         self.b = &b[rel_end..];
         let start = rel_start + self.index;

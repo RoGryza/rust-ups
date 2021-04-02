@@ -31,7 +31,8 @@ pub enum UpsParseError {
 pub type UpsParseResult<T> = Result<T, UpsParseError>;
 
 /// Collection of errors returned from patching. You can access the patched file in `output` in
-/// case you want to ignore the errors. Use [`iter`] and [`into_iter`] to inspect errors.
+/// case you want to ignore the errors. Use [`iter`](UpsPatchErrors::iter) and
+/// [`into_iter`](IntoIterator::into_iter) to inspect errors.
 pub struct UpsPatchErrors {
     /// Possibly invalid output from the patch operation.
     pub output: Vec<u8>,
@@ -59,9 +60,14 @@ impl UpsPatchErrors {
     pub fn iter(&self) -> impl Iterator<Item = &UpsPatchError> {
         std::iter::once(&self.fst_error).chain(&self.errors)
     }
+}
 
-    /// Consume self and return and iterator over all patching errors.
-    pub fn into_iter(self) -> impl Iterator<Item = UpsPatchError> {
+impl IntoIterator for UpsPatchErrors {
+    type IntoIter =
+        std::iter::Chain<std::iter::Once<UpsPatchError>, std::vec::IntoIter<UpsPatchError>>;
+    type Item = UpsPatchError;
+
+    fn into_iter(self) -> Self::IntoIter {
         std::iter::once(self.fst_error).chain(self.errors)
     }
 }
@@ -153,10 +159,10 @@ impl Display for MetadataMismatch {
     }
 }
 
-/// Parsed UPS patch file. Use [`parse`] or [`from_files`] to instantiate, [`apply`] and
-/// [`revert`] to use the patch.
+/// Parsed UPS patch file. Use [`parse`](Patch::parse) or [`from_files`](Patch::from_files) to
+/// instantiate, [`apply`](Patch::apply) and [`revert`](Patch::revert) to use the patch.
 ///
-/// Besides metadata for validation, a patch consists of a series of [`Hunk`]s. Each hunk contains
+/// Besides metadata for validation, a patch consists of a series of [`Hunk`]. Each hunk contains
 /// an offset from the current _file pointer_ to the next different byte and a sequence of source
 /// file bytes XORed with destination file bytes, meaning the patch can be applied by calculating
 /// _src XOR patch_ and reverted by calculating _dst XOR patch_.
@@ -341,7 +347,7 @@ impl Patch {
                 hunk.xor_data.extend_from_slice(last_hunk_data);
                 hunk.xor_data.push(0);
             }
-        } else if last_hunk_data.len() > 0 {
+        } else if !last_hunk_data.is_empty() {
             let mut xor_data = last_hunk_data.to_vec();
             xor_data.push(0);
             hunks.push(Hunk {

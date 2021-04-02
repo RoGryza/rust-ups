@@ -1,4 +1,4 @@
-//! [`upstool`] cli library, this can be used to invoke any functionality from `upstool`
+//! `upstool` cli library, this can be used to invoke any functionality from `upstool`
 //! programmatically.
 //!
 //! ## Example
