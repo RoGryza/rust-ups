@@ -18,7 +18,7 @@ jobs:
       with:
         name: rust-ups
         authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
-    - run: nix-shell ci.nix --run "export RUSTFLAGS='--deny warnigns'; cargo check --workspace --all-features"
+    - run: nix-shell ci.nix --run "export RUSTFLAGS='--deny warnings'; cargo check --workspace --all-features"
     - run: nix-shell ci.nix --run "cargo fmt --workspace --all-features -- --check"
     - run: nix-shell ci.nix --run "cargo clippy --workspace --all-features -- --deny warnings"
     - run: nix-shell ci.nix --run "cargo test --workspace --all-features"
