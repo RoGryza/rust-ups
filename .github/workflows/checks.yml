@@ -18,18 +18,19 @@ jobs:
           ~/.cargo/registry/cache
           ~/.cargo/git
           ./target
-        key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+        key: "${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}"
         restore-keys: ${{ runner.os }}-cargo-
-    - uses: cachix/install-nix-action@v13
+    - uses: actions-rs/toolchain@v1
       with:
-        nix_path: nixpkgs=channel:nixos-unstable
-    - uses: cachix/cachix-action@v9
-      with:
-        name: rust-ups
-        authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
-    - run: nix-shell ci.nix --run "export RUSTFLAGS='--deny warnings'; cargo check --workspace --all-features"
-    - run: nix-shell ci.nix --run "cargo fmt --all -- --check"
-    - run: nix-shell ci.nix --run "cargo clippy --workspace --all-features -- --deny warnings"
-    - run: nix-shell ci.nix --run "cargo test --workspace --all-features"
-    - run: nix-shell ci.nix --argstr channel nightly --run "cargo tarpaulin --package ups --all-features --fail-under 70"
-    - run: nix-shell ci.nix --run "cargo doc --workspace --all-features"
+        toolchain: stable
+    - run: cargo install --force cargo-tarpaulin cargo-audit
+    - run: cargo generate-lockfile
+    - run: cargo audit
+    - run: cargo check --workspace --all-features
+      env:
+        RUSTFLAGS: --deny warnings
+    - run: cargo fmt --all -- --check
+    - run: cargo clippy --workspace --all-features -- --deny warnings
+    - run: cargo test --workspace --all-features
+    - run: cargo tarpaulin --package ups --all-features --fail-under 70
+    - run: cargo doc --workspace --all-features
