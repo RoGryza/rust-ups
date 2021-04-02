@@ -12,6 +12,7 @@ let
 in pkgs.stdenv.mkDerivation {
   name = "rust_ups_shell";
   buildInputs = [
+    pkgs.glibc
     rust rustChannel.cargo
   ] ++ (extra-packages pkgs);
 }
