@@ -9,9 +9,9 @@ let
   rust = rustChannel.rust.overrideAttrs(_: {
       extensions = [ "clippy" "tarpaulin" ];
   });
-in pkgs.stdenv.mkDerivation {
+in pkgs.mkShell {
   name = "rust_ups_shell";
   nativeBuildInputs = [
-    rust rustChannel
+    rust rustChannel.cargo
   ] ++ (extra-packages pkgs);
 }
