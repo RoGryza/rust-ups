@@ -345,7 +345,7 @@ impl Patch {
             let mut xor_data = last_hunk_data.to_vec();
             xor_data.push(0);
             hunks.push(Hunk {
-                offset: min_len + 1 - prev_end,
+                offset: min_len - prev_end,
                 xor_data,
             });
         }
