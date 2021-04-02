@@ -1,5 +1,7 @@
 # Rust UPS
 
+[![Checks](https://github.com/RoGryza/rust-ups/actions/workflows/checks.yml/badge.svg?branch=master)](https://github.com/RoGryza/rust-ups/actions/workflows/checks.yml)
+
 This is a Rust crate for parsing, applying and creating UPS binary patches and a CLI tool exposing
 these functions.
 

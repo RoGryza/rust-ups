@@ -9,7 +9,9 @@ let
 in pkgs.stdenv.mkDerivation {
   name = "rust_ups_shell";
   buildInputs = [
-    rustChannel.cargo rustChannel.rust.out
-    pkgs.cargo-tarpaulin pkgs.clippy
+    rustChannel.rust.overrideAttrs({ extensions ? [] }: {
+      extensions = extensions ++ [ "clippy" "tarpaulin" ];
+    })
+    rustChannel.cargo
   ] ++ extra-packages pkgs;
 }
