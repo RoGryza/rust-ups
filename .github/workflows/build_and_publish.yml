@@ -1,14 +1,10 @@
 name: Checks
 on:
-  # Schedule to make sure this keeps working with the latest stable and rerun cargo-audit
-  # periodically
-  schedule:
-    - cron: '0 0 * * *'
-  pull_request:
+  push:
     branches:
       - master
 jobs:
-  tests:
+  build_and_publish:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v2
