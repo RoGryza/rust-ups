@@ -5,6 +5,7 @@ use std::fmt::{self, Debug, Display, Formatter};
 use memchr::memchr;
 
 use crate::checksum::Checksum;
+use crate::util::SliceDiffs;
 use crate::varint;
 
 const MAGIC: &[u8] = b"UPS1";
@@ -30,7 +31,7 @@ pub enum UpsParseError {
 pub type UpsParseResult<T> = Result<T, UpsParseError>;
 
 /// Collection of errors returned from patching. You can access the patched file in `output` in
-/// case you want to ignore the errors. Use [`errors`] and [`into_errors`] to inspect errors.
+/// case you want to ignore the errors. Use [`iter`] and [`into_iter`] to inspect errors.
 pub struct UpsPatchErrors {
     /// Possibly invalid output from the patch operation.
     pub output: Vec<u8>,
@@ -55,12 +56,12 @@ impl UpsPatchErrors {
     }
 
     /// Iterate over all patching errors by reference.
-    pub fn errors(&self) -> impl Iterator<Item = &UpsPatchError> {
+    pub fn iter(&self) -> impl Iterator<Item = &UpsPatchError> {
         std::iter::once(&self.fst_error).chain(&self.errors)
     }
 
     /// Consume self and return and iterator over all patching errors.
-    pub fn into_errors(self) -> impl Iterator<Item = UpsPatchError> {
+    pub fn into_iter(self) -> impl Iterator<Item = UpsPatchError> {
         std::iter::once(self.fst_error).chain(self.errors)
     }
 }
@@ -302,42 +303,74 @@ impl Patch {
 
     /// Calculate a patch by comparing the source and destination files.
     pub fn from_files(src: &[u8], dst: &[u8]) -> Self {
-        use crate::util::SliceDiffs;
-
         let mut hunks = Vec::new();
+        // Index into the end of the previous hunk's data.
         let mut prev_end = 0;
         for diff_range in SliceDiffs::new(src, dst) {
             let offset = diff_range.start - prev_end;
-            let xor_data = src[diff_range.clone()]
+            let mut xor_data: Vec<_> = src[diff_range.clone()]
                 .iter()
                 .zip(&dst[diff_range.clone()])
                 .map(|(a, b)| a ^ b)
                 .collect();
-            // We know that data doesn't contain zeroes, because that would imply we got a
+            // We know that `xor_data` doesn't contain zeroes, because that would imply we got a
             // SliceDiff with some equal bytes.
+            assert!(memchr::memchr(0, &xor_data).is_none());
+            xor_data.push(0);
             hunks.push(Hunk { offset, xor_data });
-            prev_end = diff_range.end;
+            // prev_end needs to account for the appended 0.
+            prev_end = diff_range.end + 1;
         }
 
-        // Emit leftover hunks if either file has pending data.
         let (min_len, max_slice) = if src.len() < dst.len() {
             (src.len(), dst)
         } else {
             (dst.len(), src)
         };
-        let mut offset = min_len - prev_end;
-        // We need to split on 0 because UPS hunks are zero-terminated.
+
         let mut pending_data = &max_slice[min_len..];
+        let split_pos = memchr::memchr(0, pending_data).unwrap_or(pending_data.len());
+        let (last_hunk_data, next_pending) = pending_data.split_at(split_pos);
+        // Account for 0 byte
+        pending_data = next_pending.split_first().map_or(&[], |s| s.1);
+        // The last hunk may have more data after the end of the source file.
+        if prev_end == min_len + 1 {
+            if let Some(hunk) = hunks.last_mut() {
+                // Remove the last 0 byte so we can append to xor_data.
+                hunk.xor_data.pop();
+                hunk.xor_data.extend_from_slice(last_hunk_data);
+                hunk.xor_data.push(0);
+            }
+        } else if last_hunk_data.len() > 0 {
+            let mut xor_data = last_hunk_data.to_vec();
+            xor_data.push(0);
+            hunks.push(Hunk {
+                offset: min_len + 1 - prev_end,
+                xor_data,
+            });
+        }
+
+        // Emit leftover hunks if either file has pending data.
         while !pending_data.is_empty() {
+            let offset = match pending_data.iter().position(|x| *x != 0) {
+                Some(p) => p,
+                // All remaining bytes are 0.
+                None => break,
+            };
+            pending_data = &pending_data[offset..];
             let split_pos = memchr::memchr(0, pending_data).map_or(pending_data.len(), |x| x + 1);
-            let (xor_data, next_pending_data) = pending_data.split_at(split_pos);
-            pending_data = next_pending_data;
+            let (xor_data, next_pending) = pending_data.split_at(split_pos);
+            pending_data = next_pending;
             hunks.push(Hunk {
                 offset,
                 xor_data: xor_data.to_vec(),
             });
-            // Only the first offset is possibly non-zero, the remaining hunks are contiguous.
-            offset = 0;
+        }
+        // Last hunk may be missing a trailing 0.
+        if let Some(hunk) = hunks.last_mut() {
+            if hunk.xor_data.last() != Some(&0) {
+                hunk.xor_data.push(0);
+            }
         }
 
         Patch {
@@ -509,6 +542,8 @@ mod test {
     use proptest::collection::vec;
     use proptest::prelude::*;
 
+    use crate::util::ProptestUnwrapExt;
+
     proptest! {
         // TODO generate problematic data for testing, this is just a placeholder dumb generator
         #[test]
@@ -517,21 +552,21 @@ mod test {
                 // Set magic preamble to test other failure cases
                 raw[..4].copy_from_slice(b"UPS1");
             }
-            Patch::parse(&raw).unwrap_err();
+            Patch::parse(&raw).prop_unwrap_err()?;
         }
 
         #[test]
         fn test_patch_invalid_magic(magic in invalid_magic(), patch in patches()) {
             let mut serialized = patch.serialize();
             serialized[..4].copy_from_slice(&magic);
-            let err = Patch::parse(&serialized).unwrap_err();
+            let err = Patch::parse(&serialized).prop_unwrap_err()?;
             prop_assert!(matches!(err, UpsParseError::FormatMismatch(_)));
         }
 
         #[test]
         fn test_parse_serialize_roundtrip(patch in patches()) {
             let serialized = patch.serialize();
-            let parsed = Patch::parse(&serialized).unwrap();
+            let parsed = Patch::parse(&serialized).prop_unwrap()?;
             prop_assert_eq!(patch.src_size, parsed.src_size);
             prop_assert_eq!(patch.src_checksum, parsed.src_checksum);
             prop_assert_eq!(patch.dst_size, parsed.dst_size);
@@ -548,15 +583,39 @@ mod test {
         #[test]
         fn test_from_files_apply_results_in_dst(src in files(), dst in files()) {
             let patch = Patch::from_files(&src, &dst);
-            let applied = patch.apply(&src).unwrap();
-            prop_assert_eq!(applied, dst);
+            println!("####\n{:?}\n#####", patch);
+            match patch.apply(&src) {
+                Ok(p) => prop_assert_eq!(p, dst),
+                Err(e) => prop_assert!(false, "{:?}", e.output),
+            }
         }
 
         #[test]
         fn test_from_files_revert_results_in_src(src in files(), dst in files()) {
             let patch = Patch::from_files(&src, &dst);
-            let applied = patch.revert(&dst).unwrap();
+            let applied = patch.revert(&dst).prop_unwrap()?;
             prop_assert_eq!(applied, src);
+        }
+
+        #[test]
+        fn test_from_files_hunks_xor_data_should_end_in_0(src in files(), dst in files()) {
+            let patch = Patch::from_files(&src, &dst);
+            for hunk in patch.hunks {
+                prop_assert_eq!(
+                    hunk.xor_data.last(), Some(&0),
+                    "hunk should end in 0: {:?}", hunk.xor_data,
+                );
+            }
+        }
+
+        #[test]
+        fn test_from_files_empty_src_should_result_in_dst_split_by_0(hunks in vec(xor_data(), 0..8usize)) {
+            let dst: Vec<_> = hunks.iter().flatten().copied().collect();
+            let patch = Patch::from_files(&[], &dst);
+            let expected_hunks: Vec<_> = hunks.into_iter().map(|xor_data| {
+                Hunk { offset: 0, xor_data }
+            }).collect();
+            prop_assert_eq!(patch.hunks, expected_hunks);
         }
 
         #[test]
@@ -564,9 +623,9 @@ mod test {
             let mut serialized = patch.serialize();
             // Overwrite patch checksum
             let offset = serialized.len() - 4;
-            let real_checksum = Checksum(u32::from_le_bytes(serialized[offset..].try_into().unwrap()));
+            let real_checksum = Checksum(u32::from_le_bytes(serialized[offset..].try_into().prop_unwrap()?));
             serialized[offset..].copy_from_slice(&checksum.0.to_le_bytes());
-            let err = Patch::parse(&serialized).unwrap_err();
+            let err = Patch::parse(&serialized).prop_unwrap_err()?;
             match err {
                 UpsParseError::PatchChecksumMismatch { parsed_patch, expected, actual } => {
                     prop_assert_ne!(actual, checksum);
@@ -602,7 +661,7 @@ mod test {
     }
 
     fn files() -> impl Strategy<Value = Vec<u8>> {
-        vec(any::<u8>(), 0..512)
+        vec(any::<u8>(), 0..32)
     }
 
     fn file_sizes() -> impl Strategy<Value = usize> {

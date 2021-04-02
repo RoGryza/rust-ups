@@ -21,6 +21,20 @@ fn test_samples() {
         let reverted = patch.revert(&patched).unwrap();
         assert_eq!(rom, &reverted);
         let from_files = Patch::from_files(&*rom, &patched);
+        match patch
+            .hunks
+            .iter()
+            .zip(&from_files.hunks)
+            .enumerate()
+            .find(|(_, (h1, h2))| h1 != h2)
+        {
+            Some((i, (orig_hunk, new_hunk))) => {
+                eprintln!("First differing hunk: {}", i);
+                eprintln!("    original: {:?}", orig_hunk);
+                eprintln!("    from_files: {:?}", new_hunk);
+            }
+            None => eprintln!("Differing hunks after end"),
+        }
         assert_eq!(patch, from_files);
     }
 }
