@@ -147,7 +147,7 @@ pub fn generate(args: &GenerateArgs) -> Result<(), RunError> {
             e,
         )
     })?;
-    let patch = Patch::from_files(&src, &dst);
+    let patch = Patch::diff(&src, &dst);
     write_output(&args.patch, &patch.serialize())
 }
 

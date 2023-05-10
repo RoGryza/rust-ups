@@ -1,3 +1,4 @@
+#![allow(warnings)]
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -10,37 +11,43 @@ type Patches = Vec<(PathBuf, Patch)>;
 #[ignore]
 #[test]
 fn test_samples() {
-    let (roms, patches) = read_samples();
+    let (srcs, dsts, patches) = read_samples();
 
     for (path, patch) in patches {
-        let rom = roms.get(&patch.src_checksum).expect(&format!(
+        let src = srcs.get(&patch.src_checksum).expect(&format!(
             "No rom found for patch \"{}\"",
             path.file_name().unwrap().to_string_lossy(),
         ));
-        let patched = patch.apply(&*rom).unwrap();
+        let dst = dsts.get(&patch.dst_checksum).expect(&format!(
+            "No patched found for patch \"{}\"",
+            path.file_name().unwrap().to_string_lossy(),
+        ));
+        let patched = patch.apply(&*src).unwrap();
+        assert_eq!(dst, &patched);
         let reverted = patch.revert(&patched).unwrap();
-        assert_eq!(rom, &reverted);
-        let from_files = Patch::from_files(&*rom, &patched);
+        assert_eq!(src, &reverted);
+        let diff = Patch::diff(&*src, &patched);
         match patch
-            .hunks
+            .blocks
             .iter()
-            .zip(&from_files.hunks)
+            .zip(&diff.blocks)
             .enumerate()
             .find(|(_, (h1, h2))| h1 != h2)
         {
-            Some((i, (orig_hunk, new_hunk))) => {
-                eprintln!("First differing hunk: {}", i);
-                eprintln!("    original: {:?}", orig_hunk);
-                eprintln!("    from_files: {:?}", new_hunk);
+            Some((i, (orig_block, new_block))) => {
+                eprintln!("First differing block: {}", i);
+                eprintln!("    original: {:?}", orig_block);
+                eprintln!("    from_files: {:?}", new_block);
             }
-            None => eprintln!("Differing hunks after end"),
+            None => eprintln!("Differing blocks after end"),
         }
-        assert_eq!(patch, from_files);
+        assert_eq!(patch, diff);
     }
 }
 
-fn read_samples() -> (Roms, Patches) {
-    let mut roms = HashMap::new();
+fn read_samples() -> (Roms, Roms, Patches) {
+    let mut srcs = HashMap::new();
+    let mut dsts = HashMap::new();
     let mut patches = Vec::new();
 
     for entry in fs::read_dir("../samples").unwrap().map(Result::unwrap) {
@@ -50,13 +57,19 @@ fn read_samples() -> (Roms, Patches) {
                 let raw_patch = fs::read(&path).unwrap();
                 let patch = Patch::parse(&raw_patch).unwrap();
                 patches.push((path, patch));
+            } else if path.extension().and_then(|s| s.to_str()) == Some("rom") {
+                let src = fs::read(&path).unwrap();
+                let checksum = Checksum::from_bytes(&src);
+                srcs.insert(checksum, src);
+            } else if path.extension().and_then(|s| s.to_str()) == Some("patched") {
+                let dst = fs::read(&path).unwrap();
+                let checksum = Checksum::from_bytes(&dst);
+                dsts.insert(checksum, dst);
             } else {
-                let rom = fs::read(&path).unwrap();
-                let checksum = Checksum::from_bytes(&rom);
-                roms.insert(checksum, rom);
+                panic!("Unhandled file type {}", path.display());
             }
         }
     }
 
-    (roms, patches)
+    (srcs, dsts, patches)
 }

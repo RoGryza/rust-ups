@@ -11,10 +11,10 @@
 //! use ups::Patch;
 //!
 //! let rom = fs::read("samples/rom.bin")?;
-//! let raw_patch = fs::read("samples/rr-2-2b.ups")?;
+//! let raw_patch = fs::read("samples/patch.ups")?;
 //! let patch = Patch::parse(&raw_patch)?;
 //! let output = patch.apply(&rom)?;
-//! fs::write("rr-2-2b.bin", &output)?;
+//! fs::write("patched.bin", &output)?;
 //!
 //! # Ok::<_, Box<dyn std::error::Error>>(())
 //! ```
@@ -24,4 +24,4 @@ mod util;
 mod varint;
 
 pub use checksum::Checksum;
-pub use patch::{Hunk, Patch, PatchDirection, UpsParseError, UpsPatchError, UpsPatchErrors};
+pub use patch::{Block, Patch, PatchDirection, UpsParseError, UpsPatchError, UpsPatchErrors};
